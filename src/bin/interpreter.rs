@@ -87,6 +87,8 @@ fn main() -> Result<(), Error> {
     Ok(())
 }
 
+// See whether a signal has been sent and, if
+// so, toggle the output location:
 fn check_redirect(toggle: &Arc<AtomicBool>, state: &mut bool) {
     if toggle.swap(false, Ordering::Relaxed) {
         *state = !*state;
