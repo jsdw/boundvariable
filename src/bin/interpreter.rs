@@ -1,14 +1,6 @@
-// Needed to convert NoneError into custom result:
-#![feature(try_trait)]
-
-mod ops;
-mod platter;
-mod program;
-mod error;
-
-use self::program::{Program, StepResult};
-use self::error::Error;
-use std::io::{Read, Write};
+use common::program::{Program, StepResult};
+use common::error::{Error, err};
+use std::io::{Read, Write, ErrorKind};
 use std::fs::{File,OpenOptions};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -74,9 +66,19 @@ fn main() -> Result<(), Error> {
             },
             StepResult::InputNeeded{ inputter } => {
                 let mut buf = [0; 1];
-                std::io::stdin().read_exact(&mut buf)?;
-                let val = buf[0];
-                program.provide_input(inputter, if val == b'\n' { None } else { Some(val) });
+                match std::io::stdin().read_exact(&mut buf) {
+                    Ok(_) => {
+                        program.provide_input(inputter, Some(buf[0]));
+                    },
+                    Err(e) => {
+                        // If we have run out of input, send None to the
+                        // program to signal that input has finished..
+                        if e.kind() != ErrorKind::UnexpectedEof {
+                            return Err(err("stdin expected but not given"));
+                        }
+                        program.provide_input(inputter, None);
+                    }
+                }
             },
             StepResult::Continue => {}
         }

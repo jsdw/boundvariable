@@ -6,4 +6,4 @@ The challenge begins with implementing an interpreter following the spec um-spec
 
 Running the interpreter on the Codex provided (and entering the decryption key provided of `(\b.bb)(\v.vv)06FHPVboundvarHRAk`) gives the ability to dump some data, which when inspected is seen to contain another program that itself can be run on the interpreter.
 
-This _inner_ program provides a login prompt on running it. It says that one can login as `guest` but trying this in a few combinations does not get me in.
+This _inner_ program provides a login prompt on running it. It says that one can login as `guest`. At this point I find that my program should not strip newlines, as the actual input required to pass this phase is `'guest\n'`. I'm in!
