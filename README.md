@@ -1,5 +1,24 @@
 # Boundvariable (ICFP 06 Programming Challenge):
 
+## Installation
+
+```
+rustup toolchain install nightly-2018-11-04
+rustup default nightly-2018-11-04
+
+cargo build --release
+```
+
+## Usage
+
+The interpreter can be used after building above by passing the program as the first and only argument:
+
+```
+./target/release/interpreter codex.umz
+```
+
+## Notes
+
 **Spoiler alert: below are my notes on progress through the challenge: avoid reading if you don't want spoliers!**
 
 The challenge begins with implementing an interpreter following the spec um-spec.txt.

@@ -2,5 +2,5 @@
 /target
 **/*.rs.bk
 /boundvariable.out
-*.umz
+codex.umz
 *.um
