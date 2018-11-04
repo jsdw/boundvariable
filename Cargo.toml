@@ -11,3 +11,6 @@ signal-hook = "0.1.5"
 [lib]
 name = "common"
 path = "src/common/lib.rs"
+
+[profile.release]
+lto = true
