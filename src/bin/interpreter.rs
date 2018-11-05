@@ -46,9 +46,8 @@ fn main() -> Result<(), Error> {
     file.read_to_end(&mut file_data)?;
     program.load_program(&file_data);
 
+    // Run instructions and handle the result:
     loop {
-
-        // Run one instruction and handle the result:
         match program.step()? {
             StepResult::Halted => {
                 break;
