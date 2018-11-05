@@ -1,41 +1,52 @@
 use common::program::{Program, StepResult};
-use common::error::{Error, err};
-use std::io::{Read, Write, ErrorKind};
-use std::fs::{File,OpenOptions};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use common::error::{Error};
+use std::io::{Read, Write};
+use std::fs::{File};
+use clap::{Arg, App};
+use crossbeam::{ channel };
+use std::thread;
 
 fn main() -> Result<(), Error> {
 
-    // Install signal handling so that we can catch a signal and
-    // toggle between sending output to stdout vs a file:
-    let signal_received = Arc::new(AtomicBool::new(false));
-    signal_hook::flag::register(signal_hook::SIGUSR1, Arc::clone(&signal_received))?;
+    // Parse args and provide program help/info on load:
+    let opts = App::new("interpreter")
+        .version("0.2")
+        .author("James Wilson <me@jsdw.me>")
+        .about("UM interpreter for ICFP 06 Boundvariable coding challenge")
+        .arg(Arg::with_name("port")
+            .short("p")
+            .long("port")
+            .value_name("PORT")
+            .help("Provide a port to allow TCP connections to take hold of input/output"))
+        .arg(Arg::with_name("FILE")
+            .help("Set the UM/UMZ program to interpret")
+            .required(true)
+            .index(1))
+        .get_matches();
 
+    let filename = opts.value_of("FILE").unwrap();
+
+    // If a port was provided, we'll allow TCP connections
+    // to provide input/output:
+    let port: Option<u16> = opts
+        .value_of("port")
+        .and_then(|p| p.parse().ok());
+
+    // Spin up channels to get input/output from.
+    let (_in, input) = channel::unbounded();
+    let (output, _out) = channel::unbounded();
+
+    // handle in/out via separate thread.
+    thread::spawn(move || handle_io(_in, _out, port));
+
+    // Create new interpreter and read data into it:
     let mut program = Program::new();
-
-    let args: Vec<String> = std::env::args().take(2).collect();
-
     let mut file_data = vec![];
-    let filename = args.get(1).ok_or("Need to provide argument for program (.um or .umz) to read")?;
-    let mut file = File::open(&filename)?;
+    let mut file = File::open(filename)?;
     file.read_to_end(&mut file_data)?;
-
     program.load_program(&file_data);
-    let mut send_to_stdout = true;
-    let mut file: Option<File> = None;
-
-    let mut interval_steps = 0;
 
     loop {
-
-        // check our signal handler every now and then so that we can print
-        // a message about it more promptly if it changes:
-        if interval_steps == 10000 {
-            check_redirect(&signal_received, &mut send_to_stdout);
-            interval_steps = 0;
-        }
-        interval_steps += 1;
 
         // Run one instruction and handle the result:
         match program.step()? {
@@ -43,42 +54,11 @@ fn main() -> Result<(), Error> {
                 break;
             },
             StepResult::Output{ ascii } => {
-                // check our signal handler before every output to ensure we
-                // put the output in the right place:
-                check_redirect(&signal_received, &mut send_to_stdout);
-
-                // send the output to either stdout or file based on our toggle:
-                if send_to_stdout {
-                    let mut stdout = std::io::stdout();
-                    stdout.write(&[ascii])?;
-                    stdout.flush()?;
-                } else {
-                    if file.is_none() {
-                        file = Some(OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open("boundvariable.out")?);
-                    }
-                    let handle = file.as_mut()?;
-                    handle.write(&[ascii])?;
-                    handle.flush()?;
-                }
+                output.send(ascii);
             },
             StepResult::InputNeeded{ inputter } => {
-                let mut buf = [0; 1];
-                match std::io::stdin().read_exact(&mut buf) {
-                    Ok(_) => {
-                        program.provide_input(inputter, Some(buf[0]));
-                    },
-                    Err(e) => {
-                        // If we have run out of input, send None to the
-                        // program to signal that input has finished..
-                        if e.kind() != ErrorKind::UnexpectedEof {
-                            return Err(err("stdin expected but not given"));
-                        }
-                        program.provide_input(inputter, None);
-                    }
-                }
+                let byte = input.recv()?;
+                program.provide_input(inputter, Some(byte));
             },
             StepResult::Continue => {}
         }
@@ -87,15 +67,25 @@ fn main() -> Result<(), Error> {
     Ok(())
 }
 
-// See whether a signal has been sent and, if
-// so, toggle the output location:
-fn check_redirect(toggle: &Arc<AtomicBool>, state: &mut bool) {
-    if toggle.swap(false, Ordering::Relaxed) {
-        *state = !*state;
-        if *state {
-            eprintln!("<<Redirecting output to stdout>>");
-        } else {
-            eprintln!("<<Redirecting output to file>>");
+fn handle_io(input: channel::Sender<u8>, output: channel::Receiver<u8>, _tcp_port: Option<u16>) {
+
+    // Reading from stdin:
+    thread::spawn(move || {
+        let mut stdin = std::io::stdin();
+        loop {
+            let mut buf = [0;1];
+            if let Ok(()) = stdin.read_exact(&mut buf) {
+                input.send(buf[0]);
+            }
+        }
+    });
+
+    // Writing to stdout:
+    loop {
+        if let Some(byte) = output.recv() {
+            let mut stdout = std::io::stdout();
+            let _ = stdout.write(&[byte]);
+            let _ = stdout.flush();
         }
     }
 }

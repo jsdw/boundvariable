@@ -4,13 +4,17 @@ version = "0.1.0"
 authors = ["James Wilson <me@unbui.lt>"]
 edition = "2018"
 
-[dependencies]
-derive_more = "0.13.0"
-signal-hook = "0.1.5"
-
 [lib]
 name = "common"
 path = "src/common/lib.rs"
 
 [profile.release]
 lto = true
+panic = "abort"
+opt-level = "z"
+codegen-units = 1
+
+[dependencies]
+derive_more = "0.13.0"
+clap = "2.32.0"
+crossbeam = "0.4"
