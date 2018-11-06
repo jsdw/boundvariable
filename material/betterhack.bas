@@ -134,7 +134,7 @@ CDXCCLXXV   REM
 CDXCCLXXX   REM We succeeded at finding a complex PW so print it:
 CDXCCLXXXV  REM
 CDXCCLXL    PRINT "found complex match!! for user " + username + CHR(X)
-CDXCCLXLV   PRINT "password: " + words(i) + j + k
+CDXCCLXLV   PRINT "password: " + words(i) + decimals(j) + decimals(k)
 CDXCCLL     END
 
 
