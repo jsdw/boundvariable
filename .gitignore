@@ -2,6 +2,5 @@
 /target
 **/*.rs.bk
 /boundvariable.out
-codex.umz
-*.um
 .history
+.DS_Store

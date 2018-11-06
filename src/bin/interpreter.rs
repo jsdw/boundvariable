@@ -32,12 +32,8 @@ fn main() -> Result<(), Error> {
         .value_of("port")
         .and_then(|p| p.parse().ok());
 
-    // Spin up channels to get input/output from.
-    let (_in, input) = channel::unbounded();
-    let (output, _out) = channel::unbounded();
-
     // handle in/out via separate thread.
-    thread::spawn(move || handle_io(_in, _out, port));
+    let (output, input) = handle_io(port);
 
     // Create new interpreter and read data into it:
     let mut program = Program::new();
@@ -66,25 +62,35 @@ fn main() -> Result<(), Error> {
     Ok(())
 }
 
-fn handle_io(input: channel::Sender<u8>, output: channel::Receiver<u8>, _tcp_port: Option<u16>) {
+fn handle_io(_tcp_port: Option<u16>)  -> (channel::Sender<u8>, channel::Receiver<u8>) {
 
-    // Reading from stdin:
+    // Spin up channels to get input/output from.
+    let (send_input, recv_input) = channel::unbounded();
+    let (send_output, recv_output) = channel::unbounded();
+
     thread::spawn(move || {
-        let mut stdin = std::io::stdin();
+
+        // Reading from stdin:
+        thread::spawn(move || {
+            let mut stdin = std::io::stdin();
+            loop {
+                let mut buf = [0;1];
+                if let Ok(()) = stdin.read_exact(&mut buf) {
+                    send_input.send(buf[0]);
+                }
+            }
+        });
+
+        // Writing to stdout:
         loop {
-            let mut buf = [0;1];
-            if let Ok(()) = stdin.read_exact(&mut buf) {
-                input.send(buf[0]);
+            if let Some(byte) = recv_output.recv() {
+                let mut stdout = std::io::stdout();
+                let _ = stdout.write(&[byte]);
+                let _ = stdout.flush();
             }
         }
+
     });
 
-    // Writing to stdout:
-    loop {
-        if let Some(byte) = output.recv() {
-            let mut stdout = std::io::stdout();
-            let _ = stdout.write(&[byte]);
-            let _ = stdout.flush();
-        }
-    }
+    (send_output, recv_input)
 }
