@@ -1,5 +1,4 @@
 use crate::platter::Platter;
-use crate::ops::Operator;
 use crate::error::{err, Error};
 
 pub struct Program {
@@ -57,78 +56,87 @@ impl Program {
         let program = &self.platters[0];
 
         // get operator
-        let platter = program[self.finger];
-        let op = platter.to_operator().ok_or("could not convert platter to operator")?;
+        let platter = *program.get(self.finger)?;
 
-        // advance finger if possible
-        if self.finger < program.len() - 1 {
-            self.finger += 1
-        }
+        // advance finger
+        self.finger += 1;
 
         // apply operator
-        self.apply_operator(op)
+        self.apply_operator(platter)
     }
 
-    fn apply_operator(&mut self, op: Operator) -> Result<StepResult,Error> {
-        use self::Operator::*;
-        match op {
-            ConditionalMove{a,b,c} => {
-                if self.registers[c] != Platter::from(0) {
-                    self.registers[a] = self.registers[b];
+    fn apply_operator(&mut self, op: Platter) -> Result<StepResult,Error> {
+
+        let op_val = op.to_u32();
+        let op_num = (op_val >> 28) & 15;
+
+        let a = || ((op_val >> 6) & 7) as usize;
+        let b = || ((op_val >> 3) & 7) as usize;
+        let c = || (op_val & 7) as usize;
+
+        match op_num {
+            0 /* Conditional Move */ => {
+                if self.registers[c()] != Platter::from(0) {
+                    self.registers[a()] = self.registers[b()];
                 }
             },
-            ArrayIndex{a,b,c} => {
-                let array = self.platters.get(self.registers[b].to_pos())?;
-                let val = array.get(self.registers[c].to_pos())?;
-                self.registers[a] = *val;
+            1 /* Array Index */ => {
+                let array = self.platters.get(self.registers[b()].to_pos())?;
+                let val = array.get(self.registers[c()].to_pos())?;
+                self.registers[a()] = *val;
             },
-            ArrayAmendment{a,b,c} => {
-                let array = self.platters.get_mut(self.registers[a].to_pos())?;
-                let offset = self.registers[b].to_pos();
-                *array.get_mut(offset)? = self.registers[c];
+            2 /* Array Amendment */ => {
+                let array = self.platters.get_mut(self.registers[a()].to_pos())?;
+                let offset = self.registers[b()].to_pos();
+                *array.get_mut(offset)? = self.registers[c()];
             },
-            Addition{a,b,c} => {
-                self.registers[a] = self.registers[b].wrapping_add(self.registers[c]);
+            3 /* Addition */ => {
+                self.registers[a()] = self.registers[b()].wrapping_add(self.registers[c()]);
             },
-            Multiplication{a,b,c} => {
-                self.registers[a] = self.registers[b].wrapping_mul(self.registers[c]);
+            4 /* Multiplication */ => {
+                self.registers[a()] = self.registers[b()].wrapping_mul(self.registers[c()]);
             },
-            Division{a,b,c} => {
-                let c_val = self.registers[c];
+            5 /* Division */ => {
+                let c_val = self.registers[c()];
                 if c_val == Platter::from(0) {
                     return Err(err("divide by 0"));
                 }
-                self.registers[a] = self.registers[b] / c_val;
+                self.registers[a()] = self.registers[b()] / c_val;
             },
-            NotAnd{a,b,c} => {
-                self.registers[a] = !self.registers[b] | !self.registers[c];
+            6 /* Not-And */ => {
+                self.registers[a()] = !self.registers[b()] | !self.registers[c()];
             },
-            Halt => {
+            7 /* Halt */ => {
                 return Ok(StepResult::Halted)
             },
-            Allocation{b, c} => {
+            8 /* Allocation */ => {
                 let pos = self.platters.len();
-                self.platters.push(vec![Platter::from(0); self.registers[c].to_pos()]);
-                self.registers[b] = Platter::from(pos as u32);
+                self.platters.push(vec![Platter::from(0); self.registers[c()].to_pos()]);
+                self.registers[b()] = Platter::from(pos as u32);
             },
-            Abandonment{c} => {
-                *self.platters.get_mut(self.registers[c].to_pos())? = vec![];
+            9 /* Abandonment */ => {
+                *self.platters.get_mut(self.registers[c()].to_pos())? = vec![];
             },
-            Output{c} => {
-                return Ok(StepResult::Output{ ascii: self.registers[c].to_u8() });
+            10 /* Output */ => {
+                return Ok(StepResult::Output{ ascii: self.registers[c()].to_u8() });
             },
-            Input{c} => {
-                return Ok(StepResult::InputNeeded{ inputter: Inputter{ register: c } });
+            11 /* Input */ => {
+                return Ok(StepResult::InputNeeded{ inputter: Inputter{ register: c() } });
             },
-            LoadProgram{b,c} => {
-                let pos = self.registers[b].to_pos();
+            12 /* LoadProgram */ => {
+                let pos = self.registers[b()].to_pos();
                 if pos != 0 {
-                    self.platters[0] = self.platters.get(self.registers[b].to_pos())?.clone();
+                    self.platters[0] = self.platters.get(pos)?.clone();
                 }
-                self.finger = self.registers[c].to_pos();
+                self.finger = self.registers[c()].to_pos();
             },
-            Orthography{ a, value } => {
-                self.registers[a] = Platter::from(value);
+            13 /* Orthography */ => {
+                let a = (op_val >> 25) & 7;
+                let value = op_val & 0b0000_000_1111111111111111111111111;
+                self.registers[a as usize] = Platter::from(value);
+            },
+            _ /* invalid op */ => {
+                return Err(err("Invalid op"))
             }
         }
 
