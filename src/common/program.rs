@@ -4,6 +4,7 @@ use crate::error::{err, Error};
 pub struct Program {
     registers: [Platter; 8],
     platters: Vec<Vec<Platter>>,
+    free: Vec<usize>,
     finger: usize
 }
 
@@ -13,6 +14,7 @@ impl Program {
         Program {
             registers: [Platter::from(0); 8],
             platters: vec![vec![]],
+            free: vec![],
             finger: 0
         }
     }
@@ -110,12 +112,21 @@ impl Program {
                 return Ok(StepResult::Halted)
             },
             8 /* Allocation */ => {
-                let pos = self.platters.len();
-                self.platters.push(vec![Platter::from(0); self.registers[c()].to_pos()]);
+                let size = self.registers[c()].to_pos();
+                let pos = if let Some(idx) = self.free.pop() {
+                    self.platters[idx] = vec![Platter::from(0); size];
+                    idx
+                } else {
+                    let idx = self.platters.len();
+                    self.platters.push(vec![Platter::from(0); size]);
+                    idx
+                };
                 self.registers[b()] = Platter::from(pos as u32);
             },
             9 /* Abandonment */ => {
+                let idx = self.registers[c()].to_pos();
                 *self.platters.get_mut(self.registers[c()].to_pos())? = vec![];
+                self.free.push(idx);
             },
             10 /* Output */ => {
                 return Ok(StepResult::Output{ ascii: self.registers[c()].to_u8() });
