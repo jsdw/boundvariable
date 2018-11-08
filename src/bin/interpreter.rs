@@ -5,6 +5,7 @@ use std::fs::{File};
 use clap::{Arg, App};
 use crossbeam::{ channel };
 use std::thread;
+use futures::sync::mpsc;
 
 fn main() -> Result<(), Error> {
 
@@ -13,11 +14,11 @@ fn main() -> Result<(), Error> {
         .version("0.2")
         .author("James Wilson <me@jsdw.me>")
         .about("UM interpreter for ICFP 06 Boundvariable coding challenge")
-        .arg(Arg::with_name("port")
-            .short("p")
-            .long("port")
-            .value_name("PORT")
-            .help("Provide a port to allow TCP connections to take hold of input/output"))
+        .arg(Arg::with_name("address")
+            .short("a")
+            .long("address")
+            .value_name("ADDRESS")
+            .help("Provide an address to listen on to allow TCP connections to take hold of input/output"))
         .arg(Arg::with_name("FILE")
             .help("Set the UM/UMZ program to interpret")
             .required(true)
@@ -25,15 +26,14 @@ fn main() -> Result<(), Error> {
         .get_matches();
 
     let filename = opts.value_of("FILE").unwrap();
-
-    // If a port was provided, we'll allow TCP connections
-    // to provide input/output:
-    let port: Option<u16> = opts
-        .value_of("port")
-        .and_then(|p| p.parse().ok());
+    let address = if let Some(addr) = opts.value_of("address") {
+        Some(addr.parse::<std::net::SocketAddr>()?)
+    } else {
+        None
+    };
 
     // handle in/out via separate thread.
-    let (output, input) = handle_io(port);
+    let (output, input) = handle_io(address);
 
     // Create new interpreter and read data into it:
     let mut program = Program::new();
@@ -49,7 +49,7 @@ fn main() -> Result<(), Error> {
                 break;
             },
             StepResult::Output{ ascii } => {
-                output.send(ascii);
+                output.unbounded_send(ascii);
             },
             StepResult::InputNeeded{ inputter } => {
                 let byte = input.recv()?;
@@ -62,35 +62,71 @@ fn main() -> Result<(), Error> {
     Ok(())
 }
 
-fn handle_io(_tcp_port: Option<u16>)  -> (channel::Sender<u8>, channel::Receiver<u8>) {
+fn handle_io(_addr: Option<std::net::SocketAddr>)  -> (mpsc::UnboundedSender<u8>, channel::Receiver<u8>) {
 
-    // Spin up channels to get input/output from.
-    let (send_input, recv_input) = channel::unbounded();
-    let (send_output, recv_output) = channel::unbounded();
+    use tokio::runtime::current_thread::Runtime;
+    use tokio::{ io, io::{ AsyncWrite, AsyncRead } };
+    use futures::future::Future;
+    use futures::stream::Stream;
+    use futures::sync::mpsc;
+
+    let (send_input, recv_input) = channel::unbounded::<u8>();
+    let (send_output, recv_output) = mpsc::unbounded::<u8>();
 
     thread::spawn(move || {
 
-        // Reading from stdin:
-        thread::spawn(move || {
-            let mut stdin = std::io::stdin();
-            loop {
-                let mut buf = [0;1];
-                if let Ok(()) = stdin.read_exact(&mut buf) {
-                    send_input.send(buf[0]);
-                }
-            }
+        let mut runtime = Runtime::new().unwrap();
+        let handle = runtime.handle();
+
+        // Create a stream that plucks bytes from stdin:
+        let stdin_bytes = futures::stream::poll_fn(move || {
+            let mut buf: [u8; 1] = [0; 1];
+            let res = io::stdin().poll_read(&mut buf);
+            res.map(|res| res.map(|n| Some(buf[0]))).map_err(|_| ())
         });
 
-        // Writing to stdout:
-        loop {
-            if let Some(byte) = recv_output.recv() {
-                let mut stdout = std::io::stdout();
-                let _ = stdout.write(&[byte]);
-                let _ = stdout.flush();
-            }
-        }
+        // Iterate over that stream, sending bytes out to the program:
+        let stdin_stream = stdin_bytes.for_each(move |b| {
+            let _ = send_input.send(b);
+            Ok(())
+        });
+
+        // Put bytes received into stdout:
+        let stdout_stream = recv_output.for_each(|b| {
+            let mut stdout = io::stdout();
+            futures::future::poll_fn(move || {
+                let res = stdout.poll_write(&[b]); println!("RES: {:?}", res);
+                res.map(|res| res.map(|n| ())).map_err(|_| ())
+            })
+        });
+
+        handle.spawn(stdin_stream);
+        handle.spawn(stdout_stream);
+        runtime.run().expect("failed to run tokio runtime");
 
     });
+
+
+    // thread::spawn(move || {
+    //     // Reading from stdin:
+    //     thread::spawn(move || {
+    //         let mut stdin = std::io::stdin();
+    //         loop {
+    //             let mut buf = [0;1];
+    //             if let Ok(()) = stdin.read_exact(&mut buf) {
+    //                 send_input.send(buf[0]);
+    //             }
+    //         }
+    //     });
+    //     // Writing to stdout:
+    //     loop {
+    //         if let Some(byte) = recv_output.recv() {
+    //             let mut stdout = std::io::stdout();
+    //             let _ = stdout.write(&[byte]);
+    //             let _ = stdout.flush();
+    //         }
+    //     }
+    // });
 
     (send_output, recv_input)
 }

@@ -18,3 +18,7 @@ codegen-units = 1
 derive_more = "0.13.0"
 clap = "2.32.0"
 crossbeam = "0.4"
+
+# For networking:
+tokio = "0.1.11"
+futures = "0.1.25"
