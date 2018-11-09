@@ -1,10 +1,13 @@
 use common::program::{Program, StepResult};
 use common::error::{Error};
-use std::io::{Read, Write};
+use std::io::{Read};
 use std::fs::{File};
 use clap::{Arg, App};
 use crossbeam::{ channel };
 use std::thread;
+
+use tokio::prelude::*;
+use futures::try_ready;
 use futures::sync::mpsc;
 
 fn main() -> Result<(), Error> {
@@ -49,7 +52,7 @@ fn main() -> Result<(), Error> {
                 break;
             },
             StepResult::Output{ ascii } => {
-                output.unbounded_send(ascii);
+                output.unbounded_send(ascii)?;
             },
             StepResult::InputNeeded{ inputter } => {
                 let byte = input.recv()?;
@@ -64,69 +67,44 @@ fn main() -> Result<(), Error> {
 
 fn handle_io(_addr: Option<std::net::SocketAddr>)  -> (mpsc::UnboundedSender<u8>, channel::Receiver<u8>) {
 
-    use tokio::runtime::current_thread::Runtime;
-    use tokio::{ io, io::{ AsyncWrite, AsyncRead } };
-    use futures::future::Future;
-    use futures::stream::Stream;
-    use futures::sync::mpsc;
-
     let (send_input, recv_input) = channel::unbounded::<u8>();
     let (send_output, recv_output) = mpsc::unbounded::<u8>();
 
     thread::spawn(move || {
+        tokio::run(future::lazy(|| {
 
-        let mut runtime = Runtime::new().unwrap();
-        let handle = runtime.handle();
+            // poll stdin and send any bytes we receive out to our
+            // program. always return NotReady because we never want
+            // the future to resolve.
+            let stdin_future = futures::future::poll_fn(move || {
+                let mut buf: [u8; 1] = [0; 1];
+                loop {
+                    // if n != 1, we should return with NotReady anyway:
+                    let _ = try_ready!(tokio::io::stdin().poll_read(&mut buf).map_err(|_| ()));
+                    send_input.send(buf[0]);
+                }
+            });
 
-        // Create a stream that plucks bytes from stdin:
-        let stdin_bytes = futures::stream::poll_fn(move || {
-            let mut buf: [u8; 1] = [0; 1];
-            let res = io::stdin().poll_read(&mut buf);
-            res.map(|res| res.map(|n| Some(buf[0]))).map_err(|_| ())
-        });
+            // stream output from the program to stdout. Each byte streamed
+            // successfully results in Async::Ready so that we can progress
+            // to the next byte. Flush on every byte for immediate output.
+            let stdout_future = recv_output.for_each(|b| {
+                let mut stdout = tokio::io::stdout();
+                futures::future::poll_fn(move || {
+                    let _ = try_ready!(stdout.poll_write(&[b]).map_err(|_| ()));
+                    let _ = try_ready!(stdout.poll_flush().map_err(|_| ()));
+                    Ok(Async::Ready(()))
+                })
+            });
 
-        // Iterate over that stream, sending bytes out to the program:
-        let stdin_stream = stdin_bytes.for_each(move |b| {
-            let _ = send_input.send(b);
+            // spawn our futures onto the threadpool to be executed:
+            tokio::spawn(stdin_future);
+            tokio::spawn(stdout_future);
+
             Ok(())
-        });
 
-        // Put bytes received into stdout:
-        let stdout_stream = recv_output.for_each(|b| {
-            let mut stdout = io::stdout();
-            futures::future::poll_fn(move || {
-                let res = stdout.poll_write(&[b]); println!("RES: {:?}", res);
-                res.map(|res| res.map(|n| ())).map_err(|_| ())
-            })
-        });
-
-        handle.spawn(stdin_stream);
-        handle.spawn(stdout_stream);
-        runtime.run().expect("failed to run tokio runtime");
-
+        }));
     });
-
-
-    // thread::spawn(move || {
-    //     // Reading from stdin:
-    //     thread::spawn(move || {
-    //         let mut stdin = std::io::stdin();
-    //         loop {
-    //             let mut buf = [0;1];
-    //             if let Ok(()) = stdin.read_exact(&mut buf) {
-    //                 send_input.send(buf[0]);
-    //             }
-    //         }
-    //     });
-    //     // Writing to stdout:
-    //     loop {
-    //         if let Some(byte) = recv_output.recv() {
-    //             let mut stdout = std::io::stdout();
-    //             let _ = stdout.write(&[byte]);
-    //             let _ = stdout.flush();
-    //         }
-    //     }
-    // });
 
     (send_output, recv_input)
 }
