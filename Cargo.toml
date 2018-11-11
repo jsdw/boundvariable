@@ -22,3 +22,4 @@ crossbeam = "0.4"
 # For networking:
 tokio = "0.1.11"
 futures = "0.1.25"
+bytes = "0.4.10"
