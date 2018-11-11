@@ -15,6 +15,7 @@ opt-level = "z"
 codegen-units = 1
 
 [dependencies]
+jemallocator = "0.1.9"
 derive_more = "0.13.0"
 clap = "2.32.0"
 crossbeam = "0.4"

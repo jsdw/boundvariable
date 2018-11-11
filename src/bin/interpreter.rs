@@ -10,6 +10,9 @@ use tokio::prelude::*;
 use tokio::net::TcpListener;
 use futures::sync::mpsc;
 
+#[global_allocator]
+static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+
 fn main() -> Result<(), Error> {
 
     // Parse args and provide program help/info on load:
