@@ -1,7 +1,7 @@
 use common::program::{Program, StepResult};
 use common::error::{Error};
 use common::io_extra;
-use common::broadcaster;
+use common::broadcaster::Broadcaster;
 use std::{ thread, io::Read, fs::File };
 use clap::{Arg, App};
 use crossbeam::{ channel };
@@ -86,7 +86,7 @@ fn handle_io(addr: Option<std::net::SocketAddr>)  -> (mpsc::Sender<u8>, channel:
         tokio::run(future::lazy(move || {
 
             // This guy sends off any input he receives to all interested parties:
-            let broadcaster = broadcaster::new();
+            let broadcaster = Broadcaster::new();
 
             // if a network addy is provided, spin up a TCP listener to connect to
             // stdin and stdout from the program:
@@ -120,9 +120,9 @@ fn handle_io(addr: Option<std::net::SocketAddr>)  -> (mpsc::Sender<u8>, channel:
                         // the program. Ignore errors: they will lead to the
                         // sink being thrown away by the broadcaster:
                         let output = io_extra::sink_bytes(writer).sink_map_err(|_| ());
+                        broadcaster.subscribe(output);
 
-                        // Subscription future needs running:
-                        broadcaster.subscribe(Box::new(output)).map(|_| ())
+                        Ok(())
 
                     });
 
@@ -149,7 +149,7 @@ fn handle_io(addr: Option<std::net::SocketAddr>)  -> (mpsc::Sender<u8>, channel:
             // create a sink from stdout that we can pipe bytes to, and send it to the
             // broadcaster so that output is piped through to it:
             let stdout_sink = io_extra::sink_bytes(tokio::io::stdout()).sink_map_err(|_| ());
-            tokio::spawn(broadcaster.subscribe(Box::new(stdout_sink)).map(|_| ()));
+            broadcaster.subscribe(stdout_sink);
 
             // pipe all received output to our broadcaster:
             let pipe_stdout = recv_output
