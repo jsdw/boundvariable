@@ -120,9 +120,8 @@ fn handle_io(addr: Option<std::net::SocketAddr>)  -> (mpsc::Sender<u8>, channel:
                         // the program. Ignore errors: they will lead to the
                         // sink being thrown away by the broadcaster:
                         let output = io_extra::sink_bytes(writer).sink_map_err(|_| ());
-                        broadcaster.subscribe(output);
 
-                        Ok(())
+                        broadcaster.subscribe(output)
 
                     });
 
@@ -148,16 +147,25 @@ fn handle_io(addr: Option<std::net::SocketAddr>)  -> (mpsc::Sender<u8>, channel:
 
             // create a sink from stdout that we can pipe bytes to, and send it to the
             // broadcaster so that output is piped through to it:
-            let stdout_sink = io_extra::sink_bytes(tokio::io::stdout()).sink_map_err(|_| ());
-            broadcaster.subscribe(stdout_sink);
+            let stdout_sink = io_extra::sink_bytes(tokio::io::stdout()).sink_map_err(|e| { eprintln!("ERR: {:?}", e); () });
 
-            // pipe all received output to our broadcaster:
-            let pipe_stdout = recv_output
-                .map_err(|_| ())
-                .forward(broadcaster)
-                .map(|_| ());
+            // // pipe all received output to our broadcaster:
+            // let pipe_stdout = recv_output
+            //     .map_err(|_| ())
+            //     .forward(broadcaster)
+            //     .map(|_| ());
 
-            tokio::spawn(pipe_stdout);
+            let sub_then_pipe = broadcaster.subscribe(stdout_sink).and_then(|_| {
+                recv_output
+                    .map_err(|_| ())
+                    .forward(broadcaster)
+                    .map(|_| ())
+            });
+
+           // tokio::spawn(broadcaster.subscribe(stdout_sink));
+
+
+            tokio::spawn(sub_then_pipe);
 
             Ok(())
 
