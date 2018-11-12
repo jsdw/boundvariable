@@ -1,9 +1,8 @@
 use common::program::{Program, StepResult};
 use common::error::{Error};
 use common::io_extra;
-use std::io::{Read};
-use std::fs::{File};
-use std::thread;
+use common::broadcaster;
+use std::{ thread, io::Read, fs::File };
 use clap::{Arg, App};
 use crossbeam::{ channel };
 use tokio::prelude::*;
@@ -68,6 +67,9 @@ fn main() -> Result<(), Error> {
     Ok(())
 }
 
+/// This provides a way of sending to and receiving input to/from the interpreter. If
+/// a socket address is provided, it will also allow an arbitrary number of network connections
+/// to send/receive input. Allows things like `nc localhost 8080 > output` to save output:
 fn handle_io(addr: Option<std::net::SocketAddr>)  -> (mpsc::UnboundedSender<u8>, channel::Receiver<u8>) {
 
     let (send_input, recv_input) = channel::unbounded::<u8>();
@@ -76,11 +78,15 @@ fn handle_io(addr: Option<std::net::SocketAddr>)  -> (mpsc::UnboundedSender<u8>,
     thread::spawn(move || {
         tokio::run(future::lazy(move || {
 
+            // This guy sends off any input he receives to all interested parties:
+            let broadcaster = broadcaster::new();
+
             // if a network addy is provided, spin up a TCP listener to connect to
             // stdin and stdout from the program:
             if let Some(addr) = addr {
 
                 let send_input = send_input.clone();
+                let broadcaster = broadcaster.clone();
                 let tcp_connections = TcpListener::bind(&addr)
                     .expect("listener cant bind to address")
                     .incoming()
@@ -104,13 +110,10 @@ fn handle_io(addr: Option<std::net::SocketAddr>)  -> (mpsc::UnboundedSender<u8>,
                         tokio::spawn(input);
 
                         // Subscribe this connection to receive output from
-                        // the program
-                        //
-                        // @todo: actually do something with this:
-                        let _output = io_extra::sink_bytes(writer)
-                            .sink_map_err(|e| {
-                                eprintln!("Error writing to TCP socker: {:?}", e);
-                            });
+                        // the program. Ignore errors: they will lead to the
+                        // sink being thrown away by the broadcaster:
+                        let output = io_extra::sink_bytes(writer).sink_map_err(|e| eprintln!("AASDASDSADAS {:?}", e));
+                        broadcaster.subscribe(Box::new(output));
 
                         Ok(())
 
@@ -130,27 +133,24 @@ fn handle_io(addr: Option<std::net::SocketAddr>)  -> (mpsc::UnboundedSender<u8>,
                     Ok(())
                 })
                 .and_then(|_| {
-                    eprintln!("Stdin has been closed");
+                    eprintln!("<<Stdin has been closed>>");
                     Ok(())
                 });
 
             tokio::spawn(stdin_future);
 
-            // stream output from the program to stdout. This flushes after
-            // every byte to ensure output is seen:
-            let stdout_sink = io_extra::sink_bytes(tokio::io::stdout())
-                .sink_map_err(|e| {
-                    eprintln!("Error writing to stdout: {:?}", e);
-                });
+            // create a sink from stdout that we can pipe bytes to, and send it to the
+            // broadcaster so that output is piped through to it:
+            let stdout_sink = io_extra::sink_bytes(tokio::io::stdout()).sink_map_err(|_| ());
+            broadcaster.subscribe(Box::new(stdout_sink));
 
-            let stdout_future = recv_output
-                .map_err(|e| {
-                    eprintln!("Error receiving bytes from output chan: {:?}", e);
-                })
-                .forward(stdout_sink)
-                .map(|_| ());
+            // pipe all received output to our broadcaster:
+            let pipe_stdout = recv_output.for_each(move |byte| {
+                broadcaster.broadcast(byte);
+                Ok(())
+            });
 
-            tokio::spawn(stdout_future);
+            tokio::spawn(pipe_stdout);
 
             Ok(())
 
