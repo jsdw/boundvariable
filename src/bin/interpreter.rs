@@ -40,6 +40,13 @@ fn main() -> Result<(), Error> {
     // handle in/out via separate thread.
     let (output, input) = handle_io(address);
 
+    // we block on each attempt to send to futures channel. Unblocking happens
+    // when the byte is fully flushed to output. This ensures that this thread
+    // won't finish until all output from the program is handed back, whereas
+    // if we use unbounded channels the thread can finish before we've processed
+    // and flushed all of the output.
+    let mut output = output.wait();
+
     // Create new interpreter and read data into it:
     let mut program = Program::new();
     let mut file_data = vec![];
@@ -54,7 +61,7 @@ fn main() -> Result<(), Error> {
                 break;
             },
             StepResult::Output{ ascii } => {
-                output.unbounded_send(ascii)?;
+                output.send(ascii)?;
             },
             StepResult::InputNeeded{ inputter } => {
                 let byte = input.recv()?;
@@ -70,10 +77,10 @@ fn main() -> Result<(), Error> {
 /// This provides a way of sending to and receiving input to/from the interpreter. If
 /// a socket address is provided, it will also allow an arbitrary number of network connections
 /// to send/receive input. Allows things like `nc localhost 8080 > output` to save output:
-fn handle_io(addr: Option<std::net::SocketAddr>)  -> (mpsc::UnboundedSender<u8>, channel::Receiver<u8>) {
+fn handle_io(addr: Option<std::net::SocketAddr>)  -> (mpsc::Sender<u8>, channel::Receiver<u8>) {
 
     let (send_input, recv_input) = channel::unbounded::<u8>();
-    let (send_output, recv_output) = mpsc::unbounded::<u8>();
+    let (send_output, recv_output) = mpsc::channel::<u8>(0);
 
     thread::spawn(move || {
         tokio::run(future::lazy(move || {
@@ -112,10 +119,10 @@ fn handle_io(addr: Option<std::net::SocketAddr>)  -> (mpsc::UnboundedSender<u8>,
                         // Subscribe this connection to receive output from
                         // the program. Ignore errors: they will lead to the
                         // sink being thrown away by the broadcaster:
-                        let output = io_extra::sink_bytes(writer).sink_map_err(|e| eprintln!("AASDASDSADAS {:?}", e));
-                        broadcaster.subscribe(Box::new(output));
+                        let output = io_extra::sink_bytes(writer).sink_map_err(|_| ());
 
-                        Ok(())
+                        // Subscription future needs running:
+                        broadcaster.subscribe(Box::new(output)).map(|_| ())
 
                     });
 
@@ -142,13 +149,13 @@ fn handle_io(addr: Option<std::net::SocketAddr>)  -> (mpsc::UnboundedSender<u8>,
             // create a sink from stdout that we can pipe bytes to, and send it to the
             // broadcaster so that output is piped through to it:
             let stdout_sink = io_extra::sink_bytes(tokio::io::stdout()).sink_map_err(|_| ());
-            broadcaster.subscribe(Box::new(stdout_sink));
+            tokio::spawn(broadcaster.subscribe(Box::new(stdout_sink)).map(|_| ()));
 
             // pipe all received output to our broadcaster:
-            let pipe_stdout = recv_output.for_each(move |byte| {
-                broadcaster.broadcast(byte);
-                Ok(())
-            });
+            let pipe_stdout = recv_output
+                .map_err(|_| ())
+                .forward(broadcaster)
+                .map(|_| ());
 
             tokio::spawn(pipe_stdout);
 
