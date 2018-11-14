@@ -21,6 +21,8 @@ clap = "2.32.0"
 crossbeam = "0.4"
 
 # For networking:
-tokio = "0.1.11"
+# tokio = "0.1.11"
+tokio = { version = "0.1.11", features = ["async-await-preview"] }
+# tokio-async-await = "0.1.4"
 futures = "0.1.25"
 bytes = "0.4.10"

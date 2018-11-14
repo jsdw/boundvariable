@@ -1,3 +1,6 @@
+// For async/await lark:
+#![feature(await_macro, async_await, futures_api)]
+
 use common::program::{Program, StepResult};
 use common::error::{Error};
 use common::io_extra;
@@ -80,96 +83,77 @@ fn main() -> Result<(), Error> {
 fn handle_io(addr: Option<std::net::SocketAddr>)  -> (mpsc::Sender<u8>, channel::Receiver<u8>) {
 
     let (send_input, recv_input) = channel::unbounded::<u8>();
-    let (send_output, recv_output) = mpsc::channel::<u8>(0);
+    let (send_output, mut recv_output) = mpsc::channel::<u8>(0);
 
     thread::spawn(move || {
-        tokio::run(future::lazy(move || {
+        tokio::run_async(async move {
 
             // This guy sends off any input he receives to all interested parties:
-            let broadcaster = Broadcaster::new();
+            let mut broadcaster = Broadcaster::new();
 
             // if a network addy is provided, spin up a TCP listener to connect to
             // stdin and stdout from the program:
             if let Some(addr) = addr {
-
-                let send_input = send_input.clone();
                 let broadcaster = broadcaster.clone();
-                let tcp_connections = TcpListener::bind(&addr)
-                    .expect("listener cant bind to address")
-                    .incoming()
-                    .map_err(|e| eprintln!("accept failed: {:?}", e))
-                    .for_each(move |sock| {
+                let send_input = send_input.clone();
+                tokio::spawn_async(async move {
+
+                    let mut tcp_connections = TcpListener::bind(&addr)
+                        .expect("listener cant bind to address")
+                        .incoming();
+
+                    while let Some(sock) = await!(tcp_connections.next()) {
+
+                        let sock = match sock {
+                            Err(e) => {
+                                eprintln!("Error opening socket: {:?}", e);
+                                continue;
+                            },
+                            Ok(s) => s
+                        };
 
                         let (reader, writer) = sock.split();
-
-                        // Stream input from the new TCP connection
-                        // to our program:
                         let send_input = send_input.clone();
-                        let input = io_extra::stream_bytes(reader)
-                            .map_err(|e| {
-                                eprintln!("Error reading from TCP socket: {:?}", e);
-                            })
-                            .for_each(move |byte| {
-                                send_input.send(byte);
-                                Ok(())
-                            });
 
-                        tokio::spawn(input);
+                        // listen for input and send to the main thread:
+                        tokio::spawn_async(async move {
+                            let mut input = io_extra::stream_bytes(reader);
+                            while let Some(byte) = await!(input.next()) {
+                                if let Ok(byte) = byte {
+                                    send_input.send(byte);
+                                }
+                            }
+                        });
 
-                        // Subscribe this connection to receive output from
-                        // the program. Ignore errors: they will lead to the
-                        // sink being thrown away by the broadcaster:
-                        let output = io_extra::sink_bytes(writer).sink_map_err(|_| ());
+                        // subscribe to output:
+                        let mut broadcaster = broadcaster.clone();
+                        tokio::spawn_async(async move {
+                            let output = io_extra::sink_bytes(writer).sink_map_err(|_| ());
+                            await!(broadcaster.subscribe(output));
+                        })
 
-                        broadcaster.subscribe(output)
-
-                    });
-
-                tokio::spawn(tcp_connections);
-
+                    }
+                });
             }
 
-            // stream bytes from stdin, complaining if there is an error:
-            let stdin_future = io_extra::stream_bytes(tokio::io::stdin())
-                .map_err(|e| {
-                    eprintln!("Error reading from stdin: {:?}", e);
-                })
-                .for_each(move |byte| {
+            // Stream input from stdin to the program:
+            tokio::spawn_async(async move {
+                let mut stdin_future = io_extra::stream_bytes(tokio::io::stdin());
+                while let Some(Ok(byte)) = await!(stdin_future.next()) {
                     send_input.send(byte);
-                    Ok(())
-                })
-                .and_then(|_| {
-                    eprintln!("<<Stdin has been closed>>");
-                    Ok(())
-                });
-
-            tokio::spawn(stdin_future);
-
-            // create a sink from stdout that we can pipe bytes to, and send it to the
-            // broadcaster so that output is piped through to it:
-            let stdout_sink = io_extra::sink_bytes(tokio::io::stdout()).sink_map_err(|e| { eprintln!("ERR: {:?}", e); () });
-
-            // // pipe all received output to our broadcaster:
-            // let pipe_stdout = recv_output
-            //     .map_err(|_| ())
-            //     .forward(broadcaster)
-            //     .map(|_| ());
-
-            let sub_then_pipe = broadcaster.subscribe(stdout_sink).and_then(|_| {
-                recv_output
-                    .map_err(|_| ())
-                    .forward(broadcaster)
-                    .map(|_| ())
+                }
             });
 
-           // tokio::spawn(broadcaster.subscribe(stdout_sink));
+            // Stream output from stdout to our broadcaster, once we've subscribed to it:
+            let stdout_sink = io_extra::sink_bytes(tokio::io::stdout()).sink_map_err(|_| ());
+            await!(broadcaster.subscribe(stdout_sink));
+            while let Some(Ok(byte)) = await!(recv_output.next()) {
+                if let Err(e) = await!(broadcaster.send_async(byte)) {
+                    eprintln!("Error sending byte to outputters: {:?}", e);
+                }
+            }
 
-
-            tokio::spawn(sub_then_pipe);
-
-            Ok(())
-
-        }));
+        });
     });
 
     (send_output, recv_input)
