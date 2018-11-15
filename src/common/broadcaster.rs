@@ -3,18 +3,19 @@ use futures::sync::mpsc;
 
 #[derive(Clone)]
 pub struct Broadcaster {
-    sender: mpsc::Sender<Msg>
+    sender: mpsc::UnboundedSender<Msg>
 }
 
 enum Msg {
     Subscribe(Box<dyn Sink<SinkItem=u8, SinkError=()> + Send + Sync + 'static>),
-    Broadcast(u8)
+    Broadcast(u8),
+    Close
 }
 
 /// This structure adds a convenient interface which you to
 /// subscribe and send messages to the broadcaster:
 impl Broadcaster {
-    pub fn new() -> Broadcaster {
+    pub fn new() -> (Broadcaster, mpsc::Receiver<()>) {
         make_broadcaster()
     }
 
@@ -22,6 +23,11 @@ impl Broadcaster {
         let msg = Msg::Subscribe(Box::new(sink));
         let _ = await!(self.sender.send_async(msg));
     }
+
+    pub async fn close(&mut self) -> () {
+        let _ = await!(self.sender.send_async(Msg::Close));
+    }
+
 }
 
 /// Broadcaster is also a valid Sink, to avoid needing to consume the inner sink
@@ -47,9 +53,10 @@ impl Sink for Broadcaster {
 /// Create a new byte broadcaster (this will panic if it does not execute in the context
 /// of a tokio runtime). You can subscribe new Sinks and broadcast bytes to them. If a sink
 /// errors (eg it is no longer possible to send to it) it is no longer broadcasted to.
-fn make_broadcaster() -> Broadcaster {
+fn make_broadcaster() -> (Broadcaster, mpsc::Receiver<()>) {
 
-    let (send_broadcaster, mut recv_broadcaster) = mpsc::channel(0);
+    let (send_broadcaster, mut recv_broadcaster) = mpsc::unbounded();
+    let (mut send_closed, recv_closed) = mpsc::channel::<()>(0);
 
     tokio::spawn_async(async move {
 
@@ -95,16 +102,25 @@ fn make_broadcaster() -> Broadcaster {
                         }).collect();
                     }
 
+                },
+
+                // Close the broadcaster so it can receive no more output
+                Msg::Close => {
+                    recv_broadcaster.close();
                 }
+
             }
 
         }
+
+        let _ = await!(send_closed.send_async(()));
+
     });
 
     // return our interface:
-    Broadcaster {
-        sender: send_broadcaster
-    }
+    (Broadcaster {
+        sender: send_broadcaster,
+    }, recv_closed)
 
 }
 
