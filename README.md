@@ -2,7 +2,7 @@
 
 ## Installation
 
-To install the interpreter and get goind, install rustup and then:
+To install the interpreter and get going, install rustup and then:
 
 ```
 rustup toolchain install nightly-2018-11-04
