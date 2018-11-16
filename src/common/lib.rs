@@ -5,5 +5,6 @@
 pub mod platter;
 pub mod program;
 pub mod error;
+pub mod io;
 pub mod io_extra;
 pub mod broadcaster;
